@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { scrapeAllKalshiProps } from "@/lib/kalshi-scraper";
-import { buildPlayerStats } from "@/lib/espn-stats";
+import { buildPlayerStatsBatch } from "@/lib/espn-stats";
 import { evaluateProp } from "@/lib/edge-calculator";
 import type { Prop, PlayerStats } from "@/types";
 
-export const maxDuration = 120;
+export const maxDuration = 60;
 
 let cachedResult: { props: Prop[]; meta: Record<string, unknown>; cachedAt: number } | null = null;
 const CACHE_TTL = 2 * 60 * 1000;
@@ -70,6 +70,8 @@ function streamResponse(handler: (send: SendFn) => void | Promise<void>) {
   });
 }
 
+const TOP_PLAYERS = 30;
+
 async function runPipeline(
   send?: SendFn,
 ): Promise<{ props: Prop[]; meta: Record<string, unknown> }> {
@@ -93,24 +95,36 @@ async function runPipeline(
   }
   const topPlayers = [...playerVolume.entries()]
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 50)
+    .slice(0, TOP_PLAYERS)
     .map(([name]) => name);
   const topPlayerSet = new Set(topPlayers);
   const targetProps = rawProps.filter((p) => topPlayerSet.has(p.playerName));
 
+  // Group stat types by player so we can batch-fetch (1 search + 1 gamelog per player)
+  const playerStatTypes = new Map<string, Set<string>>();
+  for (const p of targetProps) {
+    if (!playerStatTypes.has(p.playerName)) playerStatTypes.set(p.playerName, new Set());
+    playerStatTypes.get(p.playerName)!.add(p.statType);
+  }
+
+  const playerNames = [...playerStatTypes.keys()];
   const statsCache = new Map<string, PlayerStats | null>();
-  const uniqueKeys = [...new Set(targetProps.map((p) => `${p.playerName}|${p.statType}`))];
 
-  send?.({ type: "progress", stage: "Fetching ESPN player stats...", percent: 35, detail: `0/${uniqueKeys.length} player stats` });
+  send?.({ type: "progress", stage: "Fetching ESPN player stats...", percent: 35, detail: `0/${playerNames.length} players` });
 
-  for (let i = 0; i < uniqueKeys.length; i++) {
-    const [name, statType] = uniqueKeys[i].split("|");
-    const stats = await buildPlayerStats(name, "nba", statType);
-    statsCache.set(uniqueKeys[i], stats);
+  for (let i = 0; i < playerNames.length; i++) {
+    const name = playerNames[i];
+    const statTypes = [...playerStatTypes.get(name)!];
 
-    if ((i + 1) % 3 === 0 || i === uniqueKeys.length - 1) {
-      const pct = 35 + Math.round(55 * (i + 1) / uniqueKeys.length);
-      send?.({ type: "progress", stage: "Fetching ESPN player stats...", percent: pct, detail: `${i + 1}/${uniqueKeys.length} player stats` });
+    const batchResult = await buildPlayerStatsBatch(name, "nba", statTypes);
+
+    for (const [st, stats] of batchResult) {
+      statsCache.set(`${name}|${st}`, stats);
+    }
+
+    if ((i + 1) % 2 === 0 || i === playerNames.length - 1) {
+      const pct = 35 + Math.round(55 * (i + 1) / playerNames.length);
+      send?.({ type: "progress", stage: "Fetching ESPN player stats...", percent: pct, detail: `${i + 1}/${playerNames.length} players` });
     }
   }
 
@@ -150,7 +164,10 @@ async function runPipeline(
       isHome: true,
       modelDetails: result.modelDetails,
       adjustments: result.adjustments,
-      playerStats: stats,
+      playerStats: {
+        ...stats,
+        gameLog: stats.gameLog.slice(-10),
+      },
     });
   }
 
