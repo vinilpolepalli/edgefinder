@@ -6,6 +6,7 @@ import { HeroStats } from "@/components/dashboard/hero-stats";
 import { EdgeExplainerPanel } from "@/components/edge-explainer/edge-explainer-panel";
 import { defaultSettings } from "@/lib/demo-data";
 import { Prop } from "@/types";
+import { probToAmericanOdds } from "@/lib/edge-calculator";
 import {
   Loader2, RefreshCw, TrendingUp, TrendingDown,
   ChevronDown, ChevronUp, Search, Filter, Clock
@@ -257,9 +258,10 @@ export default function Dashboard() {
                     >
                       <div className="border-t border-white/5">
                         {/* Table header */}
-                        <div className="grid grid-cols-[1fr_80px_100px_100px_80px_80px_80px_80px] gap-2 px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider border-b border-white/5">
+                        <div className="grid grid-cols-[1fr_80px_80px_90px_90px_80px_80px_60px_80px] gap-2 px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider border-b border-white/5">
                           <SortHeader label="Stat & Line" field="playerName" current={sortField} asc={sortAsc} onSort={toggleSort} />
                           <span className="text-right">Kalshi</span>
+                          <span className="text-right">Our Odds</span>
                           <span className="text-right">Implied %</span>
                           <SortHeader label="Model %" field="impliedProb" current={sortField} asc={sortAsc} onSort={toggleSort} className="text-right" />
                           <SortHeader label="Edge" field="edge" current={sortField} asc={sortAsc} onSort={toggleSort} className="text-right" />
@@ -282,10 +284,11 @@ export default function Dashboard() {
       ) : (
         /* Flat list mode */
         <div className="border border-white/5 rounded-xl overflow-hidden">
-          <div className="grid grid-cols-[1.5fr_1fr_80px_100px_100px_80px_80px_80px_80px] gap-2 px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider border-b border-white/5 bg-white/[0.02]">
+          <div className="grid grid-cols-[1.5fr_1fr_80px_80px_90px_90px_80px_80px_60px_80px] gap-2 px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider border-b border-white/5 bg-white/[0.02]">
             <SortHeader label="Player" field="playerName" current={sortField} asc={sortAsc} onSort={toggleSort} />
             <span>Stat &amp; Line</span>
             <span className="text-right">Kalshi</span>
+            <span className="text-right">Our Odds</span>
             <span className="text-right">Implied %</span>
             <span className="text-right">Model %</span>
             <SortHeader label="Edge" field="edge" current={sortField} asc={sortAsc} onSort={toggleSort} className="text-right" />
@@ -293,36 +296,40 @@ export default function Dashboard() {
             <SortHeader label="Conf" field="confidence" current={sortField} asc={sortAsc} onSort={toggleSort} className="text-right" />
             <span className="text-right">Signal</span>
           </div>
-          {filteredProps.map((prop) => (
-            <div
-              key={prop.id}
-              onClick={() => setSelectedProp(prop)}
-              className="grid grid-cols-[1.5fr_1fr_80px_100px_100px_80px_80px_80px_80px] gap-2 px-4 py-2.5 border-b border-white/5 hover:bg-white/[0.03] cursor-pointer transition-colors text-sm"
-            >
-              <div>
-                <span className="font-medium">{prop.playerName}</span>
-                <span className="text-xs text-gray-500 ml-1.5">{prop.team}</span>
+          {filteredProps.map((prop) => {
+            const ourOdds = probToAmericanOdds(prop.trueProb);
+            return (
+              <div
+                key={prop.id}
+                onClick={() => setSelectedProp(prop)}
+                className="grid grid-cols-[1.5fr_1fr_80px_80px_90px_90px_80px_80px_60px_80px] gap-2 px-4 py-2.5 border-b border-white/5 hover:bg-white/[0.03] cursor-pointer transition-colors text-sm"
+              >
+                <div>
+                  <span className="font-medium">{prop.playerName}</span>
+                  <span className="text-xs text-gray-500 ml-1.5">{prop.team}</span>
+                </div>
+                <span className="font-mono text-xs">
+                  {prop.statType} O{prop.line}
+                </span>
+                <span className="text-right font-mono text-xs text-gray-400">
+                  {prop.marketOdds > 0 ? "+" : ""}{prop.marketOdds}
+                </span>
+                <OurOddsCell marketOdds={prop.marketOdds} ourOdds={ourOdds} />
+                <span className="text-right font-mono text-xs">
+                  {(prop.impliedProb * 100).toFixed(1)}%
+                </span>
+                <span className={`text-right font-mono text-xs ${prop.trueProb > prop.impliedProb ? "text-green-400" : "text-red-400"}`}>
+                  {(prop.trueProb * 100).toFixed(1)}%
+                </span>
+                <EdgeCell edge={prop.edge} />
+                <span className={`text-right font-mono text-xs ${prop.ev > 0 ? "text-green-400" : "text-red-400"}`}>
+                  {(prop.ev * 100).toFixed(1)}%
+                </span>
+                <span className="text-right font-mono text-xs">{prop.confidence}</span>
+                <SignalBadge rec={prop.recommendation} />
               </div>
-              <span className="font-mono text-xs">
-                {prop.statType} O{prop.line}
-              </span>
-              <span className="text-right font-mono text-xs text-gray-400">
-                {prop.marketOdds > 0 ? "+" : ""}{prop.marketOdds}
-              </span>
-              <span className="text-right font-mono text-xs">
-                {(prop.impliedProb * 100).toFixed(1)}%
-              </span>
-              <span className={`text-right font-mono text-xs ${prop.trueProb > prop.impliedProb ? "text-green-400" : "text-red-400"}`}>
-                {(prop.trueProb * 100).toFixed(1)}%
-              </span>
-              <EdgeCell edge={prop.edge} />
-              <span className={`text-right font-mono text-xs ${prop.ev > 0 ? "text-green-400" : "text-red-400"}`}>
-                {(prop.ev * 100).toFixed(1)}%
-              </span>
-              <span className="text-right font-mono text-xs">{prop.confidence}</span>
-              <SignalBadge rec={prop.recommendation} />
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -340,10 +347,11 @@ export default function Dashboard() {
 }
 
 function PropRow({ prop, onClick }: { prop: Prop; onClick: () => void }) {
+  const ourOdds = probToAmericanOdds(prop.trueProb);
   return (
     <div
       onClick={onClick}
-      className="grid grid-cols-[1fr_80px_100px_100px_80px_80px_80px_80px] gap-2 px-4 py-2 hover:bg-white/[0.04] cursor-pointer transition-colors text-sm border-b border-white/[0.03] last:border-0"
+      className="grid grid-cols-[1fr_80px_80px_90px_90px_80px_80px_60px_80px] gap-2 px-4 py-2 hover:bg-white/[0.04] cursor-pointer transition-colors text-sm border-b border-white/[0.03] last:border-0"
     >
       <span className="font-mono text-xs">
         {prop.statType} <span className="text-orange-400">O{prop.line}</span>
@@ -351,6 +359,7 @@ function PropRow({ prop, onClick }: { prop: Prop; onClick: () => void }) {
       <span className="text-right font-mono text-xs text-gray-400">
         {prop.marketOdds > 0 ? "+" : ""}{prop.marketOdds}
       </span>
+      <OurOddsCell marketOdds={prop.marketOdds} ourOdds={ourOdds} />
       <span className="text-right font-mono text-xs">
         {(prop.impliedProb * 100).toFixed(1)}%
       </span>
@@ -364,6 +373,17 @@ function PropRow({ prop, onClick }: { prop: Prop; onClick: () => void }) {
       <span className="text-right font-mono text-xs">{prop.confidence}</span>
       <SignalBadge rec={prop.recommendation} />
     </div>
+  );
+}
+
+function OurOddsCell({ marketOdds, ourOdds }: { marketOdds: number; ourOdds: number }) {
+  const betterValue = (ourOdds < 0 && marketOdds < 0 && Math.abs(ourOdds) > Math.abs(marketOdds))
+    || (ourOdds > 0 && marketOdds > 0 && ourOdds < marketOdds)
+    || (ourOdds < 0 && marketOdds > 0);
+  return (
+    <span className={`text-right font-mono text-xs font-medium ${betterValue ? "text-green-400" : "text-orange-300"}`}>
+      {ourOdds > 0 ? "+" : ""}{ourOdds}
+    </span>
   );
 }
 
