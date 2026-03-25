@@ -136,11 +136,16 @@ async function fetchMarketsForGame(
   }
 }
 
+export type ScrapeProgressFn = (stage: string, percent: number, detail: string) => void;
+
 /**
  * Scrape ALL live NBA player props from Kalshi — no odds filter.
  * Returns every prop line for every player across all games.
+ * Accepts an optional onProgress callback for streaming progress.
  */
-export async function scrapeAllKalshiProps(): Promise<{
+export async function scrapeAllKalshiProps(
+  onProgress?: ScrapeProgressFn,
+): Promise<{
   props: KalshiProp[];
   gamesFound: number;
   totalMarketsScanned: number;
@@ -148,23 +153,33 @@ export async function scrapeAllKalshiProps(): Promise<{
 }> {
   const dateStr = getKalshiDateStr();
 
+  onProgress?.("Discovering NBA games...", 2, "Checking ESPN schedule");
   const gameKeys = await discoverGamesFromSchedule();
   if (gameKeys.length === 0) return {
     props: [], gamesFound: 0, totalMarketsScanned: 0,
     timestamp: new Date().toISOString(),
   };
 
-  console.log(`[Kalshi] ${gameKeys.length} games: ${gameKeys.join(", ")}`);
+  onProgress?.("Fetching Kalshi markets...", 5, `Found ${gameKeys.length} games`);
 
+  const statPrefixes = Object.keys(STAT_PREFIX_MAP);
+  const totalCalls = gameKeys.length * statPrefixes.length;
+  let completedCalls = 0;
   const allProps: KalshiProp[] = [];
   let totalScanned = 0;
 
   for (const gameKey of gameKeys) {
     const { away, home } = splitGameKey(gameKey);
 
-    for (const prefix of Object.keys(STAT_PREFIX_MAP)) {
+    for (const prefix of statPrefixes) {
       const markets = await fetchMarketsForGame(prefix, gameKey, dateStr);
       totalScanned += markets.length;
+      completedCalls++;
+
+      if (completedCalls % 3 === 0 || completedCalls === totalCalls) {
+        const pct = 5 + Math.round(25 * completedCalls / totalCalls);
+        onProgress?.("Fetching Kalshi markets...", pct, `${completedCalls}/${totalCalls} queries (${allProps.length} props found)`);
+      }
 
       for (const market of markets) {
         const yesBid = parseFloat(market.yes_bid_dollars) || 0;

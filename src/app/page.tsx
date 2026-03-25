@@ -15,10 +15,17 @@ import {
 type SortField = "edge" | "ev" | "confidence" | "playerName" | "impliedProb";
 type GroupBy = "player" | "stat" | "game" | "none";
 
+interface ProgressState {
+  percent: number;
+  stage: string;
+  detail: string;
+}
+
 export default function Dashboard() {
   const [selectedProp, setSelectedProp] = useState<Prop | null>(null);
   const [allProps, setAllProps] = useState<Prop[]>([]);
   const [loading, setLoading] = useState(true);
+  const [progress, setProgress] = useState<ProgressState | null>(null);
   const [lastFetch, setLastFetch] = useState<string | null>(null);
   const [meta, setMeta] = useState<Record<string, unknown> | null>(null);
   const [search, setSearch] = useState("");
@@ -28,22 +35,54 @@ export default function Dashboard() {
   const [statFilter, setStatFilter] = useState("all");
   const [expandedPlayers, setExpandedPlayers] = useState<Set<string>>(new Set());
   const [showOnlyEdges, setShowOnlyEdges] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchData = useCallback(async (force = false) => {
     setLoading(true);
+    setFetchError(null);
+    setProgress({ percent: 0, stage: "Connecting...", detail: "" });
+
     try {
-      const res = await fetch(`/api/scrape${force ? "?refresh=1" : ""}`);
-      const data = await res.json();
-      if (data.props?.length > 0) {
-        setAllProps(data.props);
-        setMeta(data.meta);
-        setLastFetch(new Date().toLocaleTimeString());
+      const res = await fetch(`/api/scrape?stream=1${force ? "&refresh=1" : ""}`);
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No response stream");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line);
+            if (event.type === "progress") {
+              setProgress({ percent: event.percent, stage: event.stage, detail: event.detail });
+            } else if (event.type === "result") {
+              if (event.props?.length > 0) {
+                setAllProps(event.props);
+                setMeta(event.meta);
+                setLastFetch(new Date().toLocaleTimeString());
+              }
+            } else if (event.type === "error") {
+              setFetchError(event.error);
+            }
+          } catch { /* skip malformed line */ }
+        }
       }
     } catch (err) {
       console.error("Fetch failed:", err);
+      setFetchError(String(err));
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   }, []);
 
@@ -83,7 +122,6 @@ export default function Dashboard() {
     return ["all", ...Array.from(types).sort()];
   }, [allProps]);
 
-  // Group props by player
   const groupedByPlayer = useMemo(() => {
     const map = new Map<string, Prop[]>();
     for (const p of filteredProps) {
@@ -91,7 +129,6 @@ export default function Dashboard() {
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(p);
     }
-    // Sort players by their best edge
     return [...map.entries()].sort((a, b) => {
       const bestA = Math.max(...a[1].map((p) => p.edge));
       const bestB = Math.max(...b[1].map((p) => p.edge));
@@ -142,61 +179,92 @@ export default function Dashboard() {
           className="flex items-center gap-1.5 text-xs bg-orange-500/10 text-orange-400 border border-orange-500/20 rounded-lg px-3 py-2 hover:bg-orange-500/20 transition-colors disabled:opacity-50"
         >
           {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-          {loading ? "Fetching live data..." : "Force Refresh"}
+          {loading ? "Fetching..." : "Force Refresh"}
         </button>
       </div>
+
+      {/* Progress bar */}
+      {loading && progress && (
+        <div className="border border-white/10 rounded-xl p-4 bg-white/[0.02]">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin text-orange-400" />
+              <span className="text-sm font-medium text-gray-200">{progress.stage}</span>
+            </div>
+            <span className="font-mono text-sm text-orange-400 font-bold">{progress.percent}%</span>
+          </div>
+          <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden">
+            <motion.div
+              className="h-full rounded-full bg-gradient-to-r from-orange-500 to-orange-400"
+              initial={{ width: 0 }}
+              animate={{ width: `${progress.percent}%` }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+            />
+          </div>
+          {progress.detail && (
+            <p className="text-xs text-gray-500 mt-1.5">{progress.detail}</p>
+          )}
+        </div>
+      )}
+
+      {/* Error state */}
+      {fetchError && !loading && allProps.length === 0 && (
+        <div className="border border-red-500/20 rounded-xl p-4 bg-red-500/[0.05] text-center">
+          <p className="text-red-400 text-sm">Failed to fetch data</p>
+          <p className="text-red-400/60 text-xs mt-1">{fetchError}</p>
+          <button
+            onClick={() => fetchData(true)}
+            className="mt-3 text-xs bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg px-3 py-1.5 hover:bg-red-500/20 transition-colors"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Hero stats */}
       {allProps.length > 0 && <HeroStats props={allProps} settings={defaultSettings} />}
 
       {/* Filters row */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-[200px] max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-          <input
-            type="text"
-            placeholder="Search player or stat..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-white/[0.03] border border-white/10 rounded-lg pl-9 pr-3 py-2 text-sm outline-none focus:border-orange-500/50 transition-colors"
-          />
-        </div>
-        <select
-          value={statFilter}
-          onChange={(e) => setStatFilter(e.target.value)}
-          className="bg-white/[0.03] border border-white/10 rounded-lg px-3 py-2 text-sm outline-none"
-        >
-          {statTypes.map((s) => (
-            <option key={s} value={s}>{s === "all" ? "All Stats" : s}</option>
-          ))}
-        </select>
-        <button
-          onClick={() => setShowOnlyEdges(!showOnlyEdges)}
-          className={`flex items-center gap-1.5 text-xs border rounded-lg px-3 py-2 transition-colors ${
-            showOnlyEdges
-              ? "bg-green-500/20 border-green-500/30 text-green-400"
-              : "bg-white/[0.03] border-white/10 text-gray-400"
-          }`}
-        >
-          <Filter className="h-3.5 w-3.5" />
-          Edges Only
-        </button>
-        <select
-          value={groupBy}
-          onChange={(e) => setGroupBy(e.target.value as GroupBy)}
-          className="bg-white/[0.03] border border-white/10 rounded-lg px-3 py-2 text-sm outline-none"
-        >
-          <option value="player">Group by Player</option>
-          <option value="none">Flat List</option>
-        </select>
-      </div>
-
-      {/* Loading state */}
-      {loading && allProps.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-20 gap-3">
-          <Loader2 className="h-8 w-8 animate-spin text-orange-400" />
-          <p className="text-gray-400 text-sm">Scraping Kalshi markets &amp; running models...</p>
-          <p className="text-gray-600 text-xs">First load takes ~60s (fetching ESPN stats for 50 players)</p>
+      {allProps.length > 0 && (
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-[200px] max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
+            <input
+              type="text"
+              placeholder="Search player or stat..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full bg-white/[0.03] border border-white/10 rounded-lg pl-9 pr-3 py-2 text-sm outline-none focus:border-orange-500/50 transition-colors"
+            />
+          </div>
+          <select
+            value={statFilter}
+            onChange={(e) => setStatFilter(e.target.value)}
+            className="bg-white/[0.03] border border-white/10 rounded-lg px-3 py-2 text-sm outline-none"
+          >
+            {statTypes.map((s) => (
+              <option key={s} value={s}>{s === "all" ? "All Stats" : s}</option>
+            ))}
+          </select>
+          <button
+            onClick={() => setShowOnlyEdges(!showOnlyEdges)}
+            className={`flex items-center gap-1.5 text-xs border rounded-lg px-3 py-2 transition-colors ${
+              showOnlyEdges
+                ? "bg-green-500/20 border-green-500/30 text-green-400"
+                : "bg-white/[0.03] border-white/10 text-gray-400"
+            }`}
+          >
+            <Filter className="h-3.5 w-3.5" />
+            Edges Only
+          </button>
+          <select
+            value={groupBy}
+            onChange={(e) => setGroupBy(e.target.value as GroupBy)}
+            className="bg-white/[0.03] border border-white/10 rounded-lg px-3 py-2 text-sm outline-none"
+          >
+            <option value="player">Group by Player</option>
+            <option value="none">Flat List</option>
+          </select>
         </div>
       )}
 
@@ -218,7 +286,6 @@ export default function Dashboard() {
                   hasEdge ? "border-green-500/20 bg-green-500/[0.02]" : "border-white/5 bg-white/[0.02]"
                 }`}
               >
-                {/* Player header row */}
                 <button
                   onClick={() => togglePlayer(playerName)}
                   className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/[0.03] transition-colors"
@@ -247,7 +314,6 @@ export default function Dashboard() {
                   </div>
                 </button>
 
-                {/* Expanded props table */}
                 <AnimatePresence>
                   {isExpanded && (
                     <motion.div
@@ -257,19 +323,15 @@ export default function Dashboard() {
                       transition={{ duration: 0.2 }}
                     >
                       <div className="border-t border-white/5">
-                        {/* Table header */}
-                        <div className="grid grid-cols-[1fr_80px_80px_90px_90px_80px_80px_60px_80px] gap-2 px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider border-b border-white/5">
+                        <div className="grid grid-cols-[1fr_100px_100px_80px_80px_60px_80px] gap-2 px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider border-b border-white/5">
                           <SortHeader label="Stat & Line" field="playerName" current={sortField} asc={sortAsc} onSort={toggleSort} />
                           <span className="text-right">Kalshi</span>
-                          <span className="text-right">Our Odds</span>
-                          <span className="text-right">Implied %</span>
-                          <SortHeader label="Model %" field="impliedProb" current={sortField} asc={sortAsc} onSort={toggleSort} className="text-right" />
+                          <span className="text-right">Our Model</span>
                           <SortHeader label="Edge" field="edge" current={sortField} asc={sortAsc} onSort={toggleSort} className="text-right" />
                           <SortHeader label="EV" field="ev" current={sortField} asc={sortAsc} onSort={toggleSort} className="text-right" />
                           <SortHeader label="Conf" field="confidence" current={sortField} asc={sortAsc} onSort={toggleSort} className="text-right" />
                           <span className="text-right">Signal</span>
                         </div>
-                        {/* Prop rows */}
                         {props.map((prop) => (
                           <PropRow key={prop.id} prop={prop} onClick={() => setSelectedProp(prop)} />
                         ))}
@@ -282,90 +344,67 @@ export default function Dashboard() {
           })}
         </div>
       ) : (
-        /* Flat list mode */
         <div className="border border-white/5 rounded-xl overflow-hidden">
-          <div className="grid grid-cols-[1.5fr_1fr_80px_80px_90px_90px_80px_80px_60px_80px] gap-2 px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider border-b border-white/5 bg-white/[0.02]">
+          <div className="grid grid-cols-[1.5fr_1fr_100px_100px_80px_80px_60px_80px] gap-2 px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider border-b border-white/5 bg-white/[0.02]">
             <SortHeader label="Player" field="playerName" current={sortField} asc={sortAsc} onSort={toggleSort} />
             <span>Stat &amp; Line</span>
             <span className="text-right">Kalshi</span>
-            <span className="text-right">Our Odds</span>
-            <span className="text-right">Implied %</span>
-            <span className="text-right">Model %</span>
+            <span className="text-right">Our Model</span>
             <SortHeader label="Edge" field="edge" current={sortField} asc={sortAsc} onSort={toggleSort} className="text-right" />
             <SortHeader label="EV" field="ev" current={sortField} asc={sortAsc} onSort={toggleSort} className="text-right" />
             <SortHeader label="Conf" field="confidence" current={sortField} asc={sortAsc} onSort={toggleSort} className="text-right" />
             <span className="text-right">Signal</span>
           </div>
-          {filteredProps.map((prop) => {
-            const ourOdds = probToAmericanOdds(prop.trueProb);
-            return (
-              <div
-                key={prop.id}
-                onClick={() => setSelectedProp(prop)}
-                className="grid grid-cols-[1.5fr_1fr_80px_80px_90px_90px_80px_80px_60px_80px] gap-2 px-4 py-2.5 border-b border-white/5 hover:bg-white/[0.03] cursor-pointer transition-colors text-sm"
-              >
-                <div>
-                  <span className="font-medium">{prop.playerName}</span>
-                  <span className="text-xs text-gray-500 ml-1.5">{prop.team}</span>
-                </div>
-                <span className="font-mono text-xs">
-                  {prop.statType} O{prop.line}
-                </span>
-                <span className="text-right font-mono text-xs text-gray-400">
-                  {prop.marketOdds > 0 ? "+" : ""}{prop.marketOdds}
-                </span>
-                <OurOddsCell marketOdds={prop.marketOdds} ourOdds={ourOdds} />
-                <span className="text-right font-mono text-xs">
-                  {(prop.impliedProb * 100).toFixed(1)}%
-                </span>
-                <span className={`text-right font-mono text-xs ${prop.trueProb > prop.impliedProb ? "text-green-400" : "text-red-400"}`}>
-                  {(prop.trueProb * 100).toFixed(1)}%
-                </span>
-                <EdgeCell edge={prop.edge} />
-                <span className={`text-right font-mono text-xs ${prop.ev > 0 ? "text-green-400" : "text-red-400"}`}>
-                  {(prop.ev * 100).toFixed(1)}%
-                </span>
-                <span className="text-right font-mono text-xs">{prop.confidence}</span>
-                <SignalBadge rec={prop.recommendation} />
-              </div>
-            );
-          })}
+          {filteredProps.map((prop) => (
+            <FlatRow key={prop.id} prop={prop} onClick={() => setSelectedProp(prop)} />
+          ))}
         </div>
       )}
 
-      {!loading && allProps.length === 0 && (
+      {!loading && allProps.length === 0 && !fetchError && (
         <div className="text-center py-20 text-gray-500">
           <p className="text-lg">No games on right now</p>
           <p className="text-sm mt-1">Check back when NBA games are scheduled today</p>
         </div>
       )}
 
-      {/* Edge Explainer Panel */}
       <EdgeExplainerPanel prop={selectedProp} onClose={() => setSelectedProp(null)} />
+    </div>
+  );
+}
+
+function OddsCell({ prob, americanOdds, highlight }: { prob: number; americanOdds: number; highlight?: "green" | "red" | "neutral" }) {
+  const pctStr = `${(prob * 100).toFixed(1)}%`;
+  const oddsStr = americanOdds > 0 ? `+${americanOdds}` : `${americanOdds}`;
+
+  const color = highlight === "green"
+    ? "text-green-400"
+    : highlight === "red"
+    ? "text-red-400"
+    : "text-gray-300";
+
+  return (
+    <div className="text-right">
+      <span className={`font-mono text-xs font-medium block ${color}`}>{pctStr}</span>
+      <span className="font-mono text-[10px] text-gray-600 block">{oddsStr}</span>
     </div>
   );
 }
 
 function PropRow({ prop, onClick }: { prop: Prop; onClick: () => void }) {
   const ourOdds = probToAmericanOdds(prop.trueProb);
+  const hasEdge = prop.trueProb > prop.impliedProb;
+
   return (
     <div
       onClick={onClick}
-      className="grid grid-cols-[1fr_80px_80px_90px_90px_80px_80px_60px_80px] gap-2 px-4 py-2 hover:bg-white/[0.04] cursor-pointer transition-colors text-sm border-b border-white/[0.03] last:border-0"
+      className="grid grid-cols-[1fr_100px_100px_80px_80px_60px_80px] gap-2 px-4 py-2 hover:bg-white/[0.04] cursor-pointer transition-colors text-sm border-b border-white/[0.03] last:border-0"
     >
       <span className="font-mono text-xs">
         {prop.statType} <span className="text-orange-400">O{prop.line}</span>
       </span>
-      <span className="text-right font-mono text-xs text-gray-400">
-        {prop.marketOdds > 0 ? "+" : ""}{prop.marketOdds}
-      </span>
-      <OurOddsCell marketOdds={prop.marketOdds} ourOdds={ourOdds} />
-      <span className="text-right font-mono text-xs">
-        {(prop.impliedProb * 100).toFixed(1)}%
-      </span>
-      <span className={`text-right font-mono text-xs font-medium ${prop.trueProb > prop.impliedProb ? "text-green-400" : "text-red-400"}`}>
-        {(prop.trueProb * 100).toFixed(1)}%
-      </span>
+      <OddsCell prob={prop.impliedProb} americanOdds={prop.marketOdds} highlight="neutral" />
+      <OddsCell prob={prop.trueProb} americanOdds={ourOdds} highlight={hasEdge ? "green" : "red"} />
       <EdgeCell edge={prop.edge} />
       <span className={`text-right font-mono text-xs ${prop.ev > 0 ? "text-green-400" : "text-red-400"}`}>
         {prop.ev > 0 ? "+" : ""}{(prop.ev * 100).toFixed(1)}%
@@ -376,14 +415,31 @@ function PropRow({ prop, onClick }: { prop: Prop; onClick: () => void }) {
   );
 }
 
-function OurOddsCell({ marketOdds, ourOdds }: { marketOdds: number; ourOdds: number }) {
-  const betterValue = (ourOdds < 0 && marketOdds < 0 && Math.abs(ourOdds) > Math.abs(marketOdds))
-    || (ourOdds > 0 && marketOdds > 0 && ourOdds < marketOdds)
-    || (ourOdds < 0 && marketOdds > 0);
+function FlatRow({ prop, onClick }: { prop: Prop; onClick: () => void }) {
+  const ourOdds = probToAmericanOdds(prop.trueProb);
+  const hasEdge = prop.trueProb > prop.impliedProb;
+
   return (
-    <span className={`text-right font-mono text-xs font-medium ${betterValue ? "text-green-400" : "text-orange-300"}`}>
-      {ourOdds > 0 ? "+" : ""}{ourOdds}
-    </span>
+    <div
+      onClick={onClick}
+      className="grid grid-cols-[1.5fr_1fr_100px_100px_80px_80px_60px_80px] gap-2 px-4 py-2.5 border-b border-white/5 hover:bg-white/[0.03] cursor-pointer transition-colors text-sm"
+    >
+      <div>
+        <span className="font-medium">{prop.playerName}</span>
+        <span className="text-xs text-gray-500 ml-1.5">{prop.team}</span>
+      </div>
+      <span className="font-mono text-xs">
+        {prop.statType} O{prop.line}
+      </span>
+      <OddsCell prob={prop.impliedProb} americanOdds={prop.marketOdds} highlight="neutral" />
+      <OddsCell prob={prop.trueProb} americanOdds={ourOdds} highlight={hasEdge ? "green" : "red"} />
+      <EdgeCell edge={prop.edge} />
+      <span className={`text-right font-mono text-xs ${prop.ev > 0 ? "text-green-400" : "text-red-400"}`}>
+        {(prop.ev * 100).toFixed(1)}%
+      </span>
+      <span className="text-right font-mono text-xs">{prop.confidence}</span>
+      <SignalBadge rec={prop.recommendation} />
+    </div>
   );
 }
 
